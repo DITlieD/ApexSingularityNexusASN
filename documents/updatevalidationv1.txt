@@ -1,0 +1,58 @@
+Update nexus/src/lib.rs (The Bridge)
+
+Expose the new signal backtester via PyO3.
+
+IMPORTANT: Merge this into your existing lib.rs, ensuring all previous bindings are maintained.
+
+
+// In nexus/src/lib.rs
+
+// (Ensure necessary imports are present: PyO3, Polars, PyDataFrame, BacktestConfig, GPStrategy)
+// ...
+
+// Import the new function
+use backtester::signal_backtester::run_signal_backtest;
+// Ensure BacktestConfig and PyBacktestConfig are correctly defined/imported
+// use backtester::vectorized_backtester::BacktestConfig;
+
+// ... (Other imports)
+
+
+// NEW: Python binding for the signal backtester.
+#[pyfunction]
+fn run_signal_backtest_py(
+    data: PyDataFrame,
+    config: PyBacktestConfig,
+) -> PyResult<f64> {
+    
+    // 1. Convert Config and Data
+    let rust_config: BacktestConfig = config.into();
+    let rust_df: DataFrame = data.into();
+
+    // 2. Run Backtest (Release GIL)
+    let result = Python::with_gil(|py| {
+        py.allow_threads(|| {
+            run_signal_backtest(&rust_df, &rust_config)
+        })
+    });
+
+    // 3. Handle result and return fitness
+    let backtest_result = result
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Signal Backtest failed: {}", e)))?;
+
+    Ok(backtest_result.ttt_fitness)
+}
+
+/// The main Python module definition.
+#[pymodule]
+fn nexus(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // ... (Existing bindings for Simulation and Vectorized Backtester)
+
+    // Add the new binding
+    m.add_function(wrap_pyfunction!(run_signal_backtest_py, m)?)?;
+
+    // Ensure PyBacktestConfig is exposed
+    // m.add_class::<PyBacktestConfig>()?; 
+
+    Ok(())
+}

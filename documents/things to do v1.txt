@@ -1,0 +1,35 @@
+what is left to do;  
+
+ * MAML (Model-Agnostic Meta-Learning)
+       * Blueprint Requirement: Use PyTorch and learn2learn for rapid strategy adaptation to new market
+         regimes.
+       * Current Status: Placeholder.
+       * Analysis: The maml_adapter.py script exists, and the necessary libraries are in requirements.txt.
+         However, the script is a conceptual template. It does not use the actual GP strategies and contains a
+          dummy PyTorch model and a simplified training loop. It is not integrated into the main Forge
+         workflow.
+
+   * Advanced Validation (Walk-Forward, Monte Carlo, Causal)
+       * Blueprint Requirement: A suite of rigorous validation methods to ensure strategy robustness.
+       * Current Status: Placeholder.
+       * Analysis: The advanced_validator.py script exists and defines the function signatures for these
+         methods. However, the functions themselves contain no logic; they are empty shells. The
+         validation_gauntlet.py provides a basic level of validation, but these more advanced techniques are
+         not implemented.
+
+   * Intelligent Execution Layer (IEL)
+       * Blueprint Requirement: An embedded RL (Reinforcement Learning) agent, packaged as an ONNX file, that
+         chooses the best execution tactic (e.g., market vs. limit order).
+       * Current Status: Placeholder.
+       * Analysis: The Rust infrastructure (iel.rs and its integration in main.rs) is fully implemented and
+         can load and run an ONNX model. However, the actual iel_model.onnx file is not a trained RL agent. It
+          is a simple, rule-based model that I created to satisfy the technical requirements. The
+         "intelligence" is a placeholder.
+
+   * Rigorous HF-ABM Cost Modeling
+       * Blueprint Requirement: The simulation must account for fees, spread, slippage, and market impact.
+       * Current Status: Partially Implemented.
+       * Analysis: Fees and spread crossing are inherent. Slippage has been implemented via the
+         slippage_factor. However, a more sophisticated market impact model (how a large trade affects the
+         overall market price beyond immediate execution) is not implemented. The current slippage model
+         serves as a basic proxy for this.

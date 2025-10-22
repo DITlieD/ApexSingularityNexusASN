@@ -1,0 +1,97 @@
+Update forge/gp_framework.py (Integration)
+
+Update the main Forge cycle to pass the necessary components (pre-computed GP outputs and the MAML path) to the updated Validation Gauntlet.
+
+IMPORTANT: Merge these changes into forge/gp_framework.py.
+
+
+# In forge/gp_framework.py
+
+# (Ensure imports are present)
+from validation_gauntlet import ValidationGauntlet
+import os
+# Ensure execute_gp_strategy function (implemented in the MAML step) is available here.
+
+# ... (Rest of the file)
+
+# --- Main Execution (The Forge Cycle) ---
+def main(historical_data_path=None, run_chimera=True, use_sae=True):
+    # ... (Steps 1-5: Data Prep, Causal, Chimera, Toolbox, Evolution)
+
+    # Ensure 'data' (Polars DF with target variable) and 'historical_data_pl' (Polars DF for backtest) are ready.
+    # Ensure 'maml_data_pl' is defined (as in the MAML implementation step).
+
+    # 6. MAML Training and Validation (Updated Integration)
+    if hof:
+        best_ind = hof[0]
+        timestamp = int(time.time())
+        onnx_filename = f"maml_modulator_{timestamp}.onnx"
+        maml_path = None # Initialize maml_path
+
+        # A. Generate GP Outputs (Needed for MAML training AND Validation)
+        print("\n--- Generating GP Outputs (Historical) ---")
+        # We use maml_data_pl if available (ensures feature alignment), otherwise fallback to historical_data_pl
+        data_source = maml_data_pl if maml_data_pl is not None else historical_data_pl
+
+        if data_source is not None:
+            try:
+                # Execute the best GP strategy on the historical data
+                gp_outputs = execute_gp_strategy(best_ind, data_source, available_causal_features, pset)
+            except Exception as e:
+                print(f"ERROR generating GP outputs: {e}")
+                gp_outputs = None
+        else:
+            gp_outputs = None
+
+        # B. MAML Training (Only if data and GP outputs are available)
+        if maml_data_pl is not None and gp_outputs is not None:
+            print("\n--- Starting MAML Modulation Training ---")
+            try:
+                # (MAML training logic remains the same, using gp_outputs)
+                # ...
+                # If training is successful, export and set the path
+                # maml_manager.export_onnx(onnx_filename)
+                maml_path = onnx_filename
+            except Exception as e:
+                print(f"ERROR during MAML training: {e}")
+                # Ensure cleanup if export failed after partial training
+                if os.path.exists(onnx_filename):
+                    os.remove(onnx_filename)
+        
+
+        # 7. Validation Gauntlet (Updated Integration)
+        print("\n--- Starting Validation Gauntlet ---")
+        
+        # We must have the historical data (with 'close') and the GP outputs to run validation.
+        # historical_data_pl is used for features/close prices.
+        if historical_data_pl is not None and gp_outputs is not None:
+             
+            # Initialize the Gauntlet with all required components
+            gauntlet = ValidationGauntlet(
+                historical_data_pl, 
+                available_causal_features, 
+                pset, 
+                gp_outputs, # Pass the pre-computed GP outputs
+                maml_path     # Pass the path to the ONNX file (can be None)
+            )
+            # The Gauntlet handles the hybrid execution internally.
+            validation_passed = gauntlet.run(best_ind)
+        else:
+            print("ERROR: Missing historical data or GP outputs for validation. Forcing FAIL.")
+            validation_passed = False
+
+
+        # (Deployment logic remains the same)
+        if validation_passed:
+            print("\n--- GAUNTLET PASSED: Deploying Hybrid Strategy ---")
+            # ... (Save JSON logic using the timestamp)
+            
+        else:
+            print("\n--- GAUNTLET FAILED: Strategy Discarded ---")
+            # If validation fails, remove the associated ONNX file if it exists
+            if maml_path and os.path.exists(maml_path):
+                print(f"Removing associated MAML file: {maml_path}")
+                os.remove(maml_path)
+
+    print("\n--- ASN Forge Cycle Complete ---")
+    return pop, mstats, hof

@@ -1,0 +1,124 @@
+Integrate into nexus/src/bin/main.rs
+
+Integrate the UI server and the high-frequency broadcasting task.
+
+IMPORTANT: CAREFULLY merge the following logic into your existing main.rs
+
+
+
+// In nexus/src/bin/main.rs
+
+// Add necessary imports at the top
+use nexus::ui_server::{self, UiBroadcastState, UiModelState};
+use tokio::sync::broadcast;
+use rust_decimal::prelude::ToPrimitive;
+use chrono::Utc;
+// ... (Other imports: anyhow, std::sync::Arc, tokio::sync::Mutex, HashMap, Decimal etc.)
+
+
+// ... (TradingModel struct and methods remain the same)
+
+// --- Global State (The Crucible) ---
+// MODIFIED: Add the broadcast sender to GlobalState
+struct GlobalState {
+    // ... (Existing fields: order_books, models, symbol_map, champions, model_id_counter)
+    ui_tx: broadcast::Sender<UiBroadcastState>, // NEW
+}
+
+// (InventoryManager implementation remains the same)
+// (Pit Crew functions remain the same)
+
+
+// NEW: Helper function to periodically broadcast the state (High Frequency)
+async fn broadcast_state(state: Arc<Mutex<GlobalState>>) {
+    // Update UI 5 times per second (200ms) for high responsiveness
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(200)); 
+
+    loop {
+        interval.tick().await;
+        let guard = state.lock().await;
+        
+        let mut ui_models = Vec::new();
+
+        // Calculate current equity requires getting mid-prices
+        let mut mid_prices: HashMap<String, Option<Decimal>> = HashMap::new();
+        for (symbol, ob) in &guard.order_books {
+            mid_prices.insert(symbol.clone(), ob.get_mid_price());
+        }
+
+        for model in guard.models.values() {
+            let equity = model.calculate_equity(*mid_prices.get(&model.symbol).unwrap_or(&None));
+            
+            // Convert Decimals to f64 for the UI
+            ui_models.push(UiModelState {
+                id: model.id,
+                symbol: model.symbol.clone(),
+                // Ensure ModelState derives Debug: #[derive(Debug)]
+                state: format!("{:?}", model.state), 
+                equity: equity.to_f64().unwrap_or(0.0),
+                inventory: model.inventory.to_f64().unwrap_or(0.0),
+                realized_pnl: model.realized_pnl.to_f64().unwrap_or(0.0),
+                performance_score: model.get_performance_score(),
+                eval_ticks: model.eval_ticks,
+            });
+        }
+        
+        // Sort by ID for consistent display
+        ui_models.sort_by_key(|m| m.id);
+
+        let broadcast_state = UiBroadcastState {
+            timestamp: Utc::now().timestamp_millis(),
+            models: ui_models,
+        };
+
+        // Send the state (ignoring errors if no clients are connected)
+        guard.ui_tx.send(broadcast_state).ok();
+    }
+}
+
+
+// --- Main Execution ---
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    println!("--- ASN NEXUS INITIALIZING (Crucible v3 + UI) ---");
+
+    // --- 0. Initialize UI Broadcaster ---
+    let (tx, _rx) = broadcast::channel(32);
+    let ui_tx = tx.clone();
+
+    // Start the UI Server Task
+    tokio::spawn(async move {
+        ui_server::start_ui_server(tx).await;
+    });
+
+    // --- 1. Initialize Core Components ---
+    // ... (API Keys, Execution Client, Default Strategy loading)
+
+    // --- 2. Initialize Global State and Models ---
+    // (Ensure GlobalState initialization includes the ui_tx)
+    // Example initialization structure:
+    let mut state = GlobalState {
+        // ... (order_books, models, etc.)
+        ui_tx: ui_tx, // Pass the sender to the state
+    };
+
+    // ... (Model initialization loop)
+
+    let shared_state = Arc::new(Mutex::new(state));
+
+    // Start the State Broadcasting Task (NEW)
+    let broadcast_state_handle = shared_state.clone();
+    tokio::spawn(async move {
+        broadcast_state(broadcast_state_handle).await;
+    });
+
+    // --- 3. Start Auxiliary Tasks (Pit Crew, Private Stream) ---
+    // ... (Initialization of auxiliary tasks)
+
+    // --- 4. Connect to Public WebSocket and Subscribe ---
+    // ... (WebSocket connection logic)
+    
+    // --- 5. Main Event Loop (Public Stream Processing) ---
+    // ... (The main operational loop implementation goes here)
+}

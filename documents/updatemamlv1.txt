@@ -1,0 +1,134 @@
+Update forge/gp_framework.py (Integration)
+
+Integrate the MAML training into the Forge cycle.
+
+IMPORTANT: Carefully merge these changes into your existing gp_framework.py. Ensure POTENTIAL_FEATURES and TARGET_VARIABLE are correctly defined globally.
+
+
+
+
+# In forge/gp_framework.py
+
+# (Add necessary imports at the top)
+from deap import gp
+import polars as pl
+import numpy as np
+import time
+import os
+# Import MAML components
+from maml_adapter import MAMLManager, TaskGenerator, CONTEXT_SIZE, FEATURE_SIZE
+
+# (Ensure POTENTIAL_FEATURES matches FEATURE_SIZE=5 and TARGET_VARIABLE is defined)
+
+
+# NEW HELPER: Function to execute GP on historical data
+def execute_gp_strategy(individual, data_pl: pl.DataFrame, feature_names: list[str], pset: gp.PrimitiveSet):
+    """Executes the GP strategy (Signal and Size) on the historical data."""
+    
+    # Prepare data (We convert Polars Decimal data to Pandas/Numpy float32 for execution)
+    data_pd = data_pl.select(feature_names).to_pandas().astype(np.float32)
+    if data_pd.empty:
+        return pl.DataFrame({'gp_signal': [], 'gp_size': []})
+
+    input_args = [data_pd[name].values for name in feature_names]
+
+    def execute_tree(tree):
+        try:
+            func = gp.compile(expr=tree, pset=pset)
+            result = func(*input_args)
+            # Handle scalar outputs
+            if np.isscalar(result):
+                return np.full(len(data_pd), result)
+            return np.array(result).flatten()
+        except Exception as e:
+            return np.zeros(len(data_pd))
+
+    # GP individual structure: [SignalTree, SizeTree]
+    signal = execute_tree(individual[0])
+    size = execute_tree(individual[1])
+    
+    # Apply clamping (as done in Rust interpreter)
+    size = np.clip(np.abs(size), 0.001, 0.5)
+
+    # Return as Polars DataFrame, ensuring Decimal type for consistency with the rest of the Forge
+    return pl.DataFrame({'gp_signal': signal, 'gp_size': size}).with_columns(
+        pl.all().cast(pl.Decimal(scale=8, precision=None))
+    )
+
+
+# --- Main Execution (The Forge Cycle) ---
+# Update the main function in gp_framework.py
+def main(historical_data_path=None, run_chimera=True, use_sae=True):
+    # ... (Data Prep, Causal Discovery, Chimera Engine, Toolbox Setup, Evolution)
+    # CRITICAL: Ensure data preparation (Step 1) includes the TARGET_VARIABLE (forward returns).
+
+    # ... (After Evolution loop completes)
+
+    # 6. MAML Training and Validation (NEW STEP)
+    if hof:
+        best_ind = hof[0]
+        # ... (Print best fitness)
+        
+        timestamp = int(time.time())
+        # Define the ONNX filename using the timestamp
+        onnx_filename = f"maml_modulator_{timestamp}.onnx"
+
+        # A. MAML Training
+        print("\n--- Starting MAML Modulation Training ---")
+        
+        # Ensure the features match the MAML context requirements (FEATURE_SIZE=5)
+        if len(available_causal_features) != FEATURE_SIZE:
+             print(f"WARNING: Feature count mismatch for MAML. Expected {FEATURE_SIZE}. Skipping MAML.")
+             maml_data_pl = None
+        else:
+            # Select required columns for MAML training
+            try:
+                # We use the main 'data' object here as it contains the TARGET_VARIABLE
+                maml_data_pl = data.select(available_causal_features + [TARGET_VARIABLE])
+            except Exception as e:
+                print(f"ERROR: Missing columns for MAML (Ensure {TARGET_VARIABLE} exists). Skipping MAML.")
+                maml_data_pl = None
+        
+        if maml_data_pl is not None:
+            try:
+                # B. Generate GP Outputs (Inputs for MAML)
+                # We execute the best GP individual on the historical data
+                gp_outputs = execute_gp_strategy(best_ind, maml_data_pl, available_causal_features, pset)
+                
+                # C. Train MAML Modulator
+                task_generator = TaskGenerator(maml_data_pl, gp_outputs, available_causal_features, TARGET_VARIABLE)
+                maml_manager = MAMLManager()
+                # Use reduced iterations for practical application speed
+                maml_manager.meta_train(task_generator, iterations=500) 
+                
+                # D. Export the trained MAML model
+                maml_manager.export_onnx(onnx_filename)
+            except Exception as e:
+                print(f"ERROR during MAML training phase: {e}")
+                # Ensure cleanup if training failed
+                if os.path.exists(onnx_filename):
+                    os.remove(onnx_filename)
+
+        # 7. Validation Gauntlet
+        # (Validation logic remains the same - validates the GP component)
+        # ...
+
+        if validation_passed:
+            print("\n--- GAUNTLET PASSED: Deploying Hybrid Strategy ---")
+            # Save the GP strategy
+            json_output = deap_to_json(best_ind)
+            strategy_filename = f"strategy_challenger_{timestamp}.json"
+            with open(strategy_filename, "w") as f:
+                f.write(json_output)
+            
+            # The ONNX file is already saved. The Pit Crew must detect BOTH files.
+            print(f"Deployed GP: '{strategy_filename}'. MAML (if generated): '{onnx_filename}'")
+        else:
+            # If validation fails, remove the associated ONNX file if it exists
+            if os.path.exists(onnx_filename):
+                os.remove(onnx_filename)
+            print("\n--- GAUNTLET FAILED: Strategy Discarded ---")
+
+    # ...
+
+

@@ -1,0 +1,103 @@
+1- Update forge/fitness_ttt.py
+
+Update the evaluation functions to pass the ONNX path to the updated Rust accelerated runner.
+
+
+
+# In forge/fitness_ttt.py
+
+# ... (Imports and Configuration)
+
+# --- The Dual-Fitness Evaluation Function ---
+
+# Update the signature to include the ONNX path for the Adversarial evaluation
+def evaluate_individual(individual, dsg, historical_data_pl: pl.DataFrame=None, feature_names: list[str]=None, onnx_path: str=None):
+    # ... (Checks and Serialization)
+
+    # 2. Calculate Adversarial Fitness (HF-ABM with Market Impact)
+    # Pass the onnx_path to the accelerated runner
+    adversarial_fitness = evaluate_adversarial(individual, dsg, strategy_json=strategy_json, onnx_path=onnx_path)
+
+    # 3. Calculate Causal Fitness
+    # ... (Causal fitness logic)
+
+    # 4. Combine Fitness
+    # ... (Combination logic)
+
+# Update helper function signature
+def evaluate_adversarial(individual, dsg, strategy_json=None, onnx_path=None):
+    # ... (Serialization if strategy_json is None)
+            
+    try:
+        # Updated call to the Rust runner
+        fitness = nexus.run_accelerated_simulation_py(
+            SIM_CONFIG,
+            strategy_json,
+            onnx_path, # Pass the ONNX path
+            dsg
+        )
+        return fitness
+    except Exception as e:
+        return -float('inf')
+
+
+
+
+2- Update forge/gp_framework.py
+
+Update the fallback DSG and the toolbox setup to handle the ONNX path during evaluation.
+
+
+
+# In forge/gp_framework.py
+
+# (Imports)
+
+# --- 3. Dynamic Toolbox Setup ---
+# Update the setup function to accept the current ONNX path
+def setup_dynamic_toolbox(causal_features, dsg, historical_data_pl: pl.DataFrame, current_onnx_path: str=None):
+    toolbox = base.Toolbox()
+    
+    # ... (PSet and Operator registration)
+
+    # 3. Register Evaluation (Dual-Fitness)
+    # Pass the onnx_path to the evaluation function
+    toolbox.register("evaluate", evaluate_individual, 
+                     dsg=dsg, 
+                     historical_data_pl=historical_data_pl, 
+                     feature_names=causal_features,
+                     onnx_path=current_onnx_path) # NEW
+
+    # ... (Selection and Mutation registration)
+
+    return toolbox, pset
+
+# --- Main Execution (The Forge Cycle) ---
+def main(historical_data_path=None, run_chimera=True, use_sae=True):
+    # ... (Steps 1-2)
+
+    # 3. Chimera Engine (Find DSG)
+    # ... (Logic for running or loading DSG)
+
+    if dsg is None:
+        print("WARNING: Chimera Engine failed or skipped. Using fallback DSG.")
+        # MODIFIED: Default market making parameters (4 parameters)
+        dsg = [0.5, 0.01, 0.0001, 1.0] 
+
+    # Initialize current_onnx_path (used if evolving an existing hybrid strategy)
+    current_onnx_path = None 
+
+    # 4. Setup Dynamic Toolbox
+    # ... (Data preparation for Rust)
+    
+    # Pass the current ONNX path to the toolbox setup
+    toolbox, pset = setup_dynamic_toolbox(available_causal_features, dsg, historical_data_pl, current_onnx_path)
+
+    # 5. Evolution
+    # ... (Evolution loop)
+    
+    # 6. MAML Training and Validation
+    # ...
+
+
+

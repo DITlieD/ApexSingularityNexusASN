@@ -1,0 +1,173 @@
+Update nexus/src/velocity_core/execution.rs
+
+Modify the ExecutionClient to load the IEL model and apply the determined tactic.
+
+IMPORTANT: Merge these changes into the existing execution.rs. Ensure onnxruntime, ndarray, lazy_static dependencies are present in Cargo.toml.
+
+
+// In nexus/src/velocity_core/execution.rs
+
+// (Ensure imports for ONNX, ndarray, Decimal, ToPrimitive, lazy_static, Value, anyhow are present)
+use onnxruntime::{environment::Environment, session::Session, GraphOptimizationLevel, tensor::OrtOwnedTensor};
+use ndarray::Array;
+use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
+use serde_json::Value;
+use anyhow::{Result, anyhow};
+use std::sync::Arc;
+// ... (Other imports)
+
+// (Global ONNX Environment - Ensure this lazy_static block exists)
+lazy_static::lazy_static! {
+    static ref IEL_ONNX_ENV: Arc<Environment> = Environment::builder()
+        .with_name("ASN_IEL")
+        .build()
+        .expect("Failed to initialize IEL ONNX Runtime environment")
+        .into_arc();
+}
+
+// (BybitApiResponse and OrderResult structs)
+
+pub struct ExecutionClient {
+    // ... (Existing fields: client, api_key, api_secret, recv_window)
+    // NEW: IEL Session (Arc needed for cloning across tasks)
+    iel_session: Option<Arc<Session>>,
+}
+
+impl ExecutionClient {
+    // MODIFIED: Initialize iel_session to None in new()
+    pub fn new(api_key: String, api_secret: String) -> Self {
+        ExecutionClient {
+            // ... (Initialize other fields)
+            iel_session: None,
+        }
+    }
+
+    // NEW: Method to load the IEL model (called from main.rs)
+    pub fn load_iel_model(&mut self, path: &str) -> Result<()> {
+        println!("[IEL] Loading ONNX session from: {}", path);
+        // Use the global IEL_ONNX_ENV
+        let session = Session::builder()?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_intra_threads(1)? // Optimize for low-latency
+            .with_model_from_file(path)?;
+        
+        self.iel_session = Some(Arc::new(session));
+        println!("[IEL] Model loaded successfully.");
+        Ok(())
+    }
+
+    // (generate_signature, get_timestamp)
+
+    // MODIFIED: place_order signature updated to accept IEL state and context
+    pub async fn place_order(
+        &self, 
+        base_payload: &Value, 
+        iel_state: Option<&Vec<Decimal>>,
+        // Context required for passive orders: (Best Bid, Best Ask)
+        order_book_context: Option<(Decimal, Decimal)> 
+    ) -> Result<OrderResult> {
+        
+        let mut payload = base_payload.clone();
+
+        // Determine the execution tactic using IEL
+        let tactic = self.determine_tactic(iel_state);
+
+        // Apply the tactic to the payload
+        self.apply_tactic(&mut payload, tactic, order_book_context)?;
+
+        // (Rest of the execution logic: Signing and Sending the request)
+        // ... (Ensure the logic for sending the request and parsing the response is preserved)
+    }
+
+    // NEW: Determine the execution tactic using the IEL
+    fn determine_tactic(&self, iel_state: Option<&Vec<Decimal>>) -> u32 {
+        // Default tactic: Aggressive (0)
+        let default_tactic = 0;
+
+        if let (Some(session), Some(state)) = (&self.iel_session, iel_state) {
+            if state.len() != 4 { return default_tactic; } // STATE_DIM = 4
+
+            // Prepare input tensor (f32)
+            let state_f32: Vec<f32> = state.iter().map(|d| d.to_f32().unwrap_or(0.0)).collect();
+
+            // Shape: (Batch=1, Features=4)
+            if let Ok(input_tensor) = Array::from_shape_vec((1, 4), state_f32) {
+                let inputs = vec![input_tensor.into()];
+
+                // Run inference (output: action_logits)
+                if let Ok(outputs) = session.run(inputs) {
+                    if outputs.len() == 1 {
+                        let logits = outputs[0].view();
+                        let mut best_action = 0;
+                        let mut max_logit = f32::MIN;
+
+                        // Argmax implementation
+                        for (i, &logit) in logits.iter().enumerate() {
+                            if logit > max_logit {
+                                max_logit = logit;
+                                best_action = i as u32;
+                            }
+                        }
+                        return best_action;
+                    }
+                }
+            }
+        }
+        default_tactic
+    }
+
+    // NEW: Apply the tactic to the order payload
+    fn apply_tactic(&self, payload: &mut Value, tactic: u32, context: Option<(Decimal, Decimal)>) -> Result<()> {
+        let side = payload.get("side").and_then(|s| s.as_str());
+
+        if side.is_none() {
+            return Err(anyhow!("Invalid base payload structure"));
+        }
+        let side = side.unwrap();
+
+        match tactic {
+            0 => {
+                // Tactic 0: Aggressive (Market Order)
+                payload["orderType"] = Value::String("Market".to_string());
+            },
+            1 | 2 => {
+                // Tactics 1 & 2: Passive (Limit Orders)
+                if context.is_none() { 
+                    // Fallback to Market if context (BBO) is missing
+                    payload["orderType"] = Value::String("Market".to_string());
+                    return Ok(()); 
+                }
+                let (best_bid, best_ask) = context.unwrap();
+                payload["orderType"] = Value::String("Limit".to_string());
+
+                let price = if tactic == 1 {
+                    // Tactic 1: Passive (Limit at Touch)
+                    if side == "Buy" { best_bid } else { best_ask }
+                } else {
+                    // Tactic 2: Deep Passive (Limit 1 tick away)
+                    // CRITICAL: Assuming tick size is 0.01. A robust system needs dynamic tick size lookup.
+                    let tick_size = Decimal::new(1, 2); 
+                    if side == "Buy" {
+                        best_bid - tick_size
+                    } else {
+                        best_ask + tick_size
+                    }
+                };
+                
+                // Ensure price is valid before setting it
+                if price > Decimal::ZERO {
+                     payload["price"] = Value::String(price.to_string());
+                } else {
+                    // Fallback if price calculation results in <= 0
+                     payload["orderType"] = Value::String("Market".to_string());
+                }
+            },
+            _ => {
+                // Fallback
+                payload["orderType"] = Value::String("Market".to_string());
+            }
+        }
+        Ok(())
+    }
+}

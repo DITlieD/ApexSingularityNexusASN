@@ -1,0 +1,206 @@
+1 - Modify nexus/src/hf_abm/simulator.rs
+
+IMPORTANT: Merge the following changes into your existing simulator.rs.
+
+A. Update Imports and Strategy Type
+
+Ensure the HybridStrategy is used.
+
+
+// In nexus/src/hf_abm/simulator.rs
+
+// (Ensure these imports are present at the top)
+use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
+use rust_decimal::prelude::ToPrimitive;
+use rand::Rng;
+// MODIFIED: Import HybridStrategy
+use crate::inference::gp_interpreter::{HybridStrategy, StrategyOutput}; 
+// ... (other imports)
+
+
+
+2 - Update ApexPredatorAgent
+
+Update the agent to use HybridStrategy.
+
+
+// In nexus/src/hf_abm/simulator.rs
+
+// (Locate ApexPredatorAgent struct)
+struct ApexPredatorAgent {
+    // MODIFIED: Use HybridStrategy
+    strategy: HybridStrategy,
+}
+
+impl Agent for ApexPredatorAgent {
+    fn id(&self) -> u64 { APEX_PREDATOR_ID }
+
+    fn on_tick(&mut self, market_state: &MarketState, agent_state: &AgentState) -> Vec<Order> {
+        // NOTE: During standard GP evolution in the Accelerated Runner, we evaluate without MAML context (None) for speed.
+        if let Some(features) = market_state.calculate_features() {
+            // MODIFIED: Evaluate HybridStrategy with context=None
+            match self.strategy.evaluate(&features, None) {
+                Ok(output) => {
+                    // (Order generation logic remains the same)
+                    // ... (Implementation omitted for brevity)
+                },
+                Err(_) => return vec![],
+            }
+        }
+        vec![]
+    }
+}
+
+
+
+3 - Update DSGAgent (Market Impact Logic)
+
+Implement the Inventory Pressure model. Replace the existing DSGAgent implementation.
+
+
+
+// In nexus/src/hf_abm/simulator.rs
+
+// (Locate DSGAgent struct)
+struct DSGAgent {
+    genome: Vec<f64>,
+    rng: rand::rngs::ThreadRng,
+}
+
+impl DSGAgent {
+    // Constructor
+    fn new(genome: Vec<f64>) -> Self {
+        Self {
+            genome,
+            rng: rand::thread_rng(),
+        }
+    }
+}
+
+impl Agent for DSGAgent {
+    fn id(&self) -> u64 { DSG_AGENT_ID }
+
+    fn on_tick(&mut self, market_state: &MarketState, agent_state: &AgentState) -> Vec<Order> {
+        
+        // DSG Genome Parameters (Expanded Structure for Market Impact)
+        // [0]: order_prob (Activity level)
+        // [1]: spread_factor (Base spread)
+        // [2]: inventory_sensitivity (Market Impact factor) - NEW
+        // [3]: order_size (Liquidity provision size) - NEW
+
+        // Extract parameters with defaults
+        let order_prob = self.genome.get(0).cloned().unwrap_or(0.8);
+        let spread_factor = self.genome.get(1).cloned().unwrap_or(0.01);
+        // Sensitivity (gamma) controls how aggressively the MM skews prices based on inventory.
+        let inventory_sensitivity = self.genome.get(2).cloned().unwrap_or(0.0001);
+        let order_size_param = self.genome.get(3).cloned().unwrap_or(1.0);
+
+        
+        let mut orders = Vec::new();
+
+        if self.rng.gen_bool(order_prob) {
+            // 1. Determine Reference Price
+            let reference_price = market_state.get_mid_price().unwrap_or(dec!(10000.0));
+            
+            // 2. Calculate Inventory Skew (The Market Impact Mechanism)
+            let inventory = agent_state.inventory;
+            let sensitivity = Decimal::from_f64_retain(inventory_sensitivity).unwrap_or(dec!(0.0001));
+            
+            // Skew = inventory * sensitivity * reference_price
+            // If long (positive inventory), skew prices DOWN (subtract skew).
+            let inventory_skew = inventory * sensitivity * reference_price;
+
+            // The adjusted reference price incorporates the impact.
+            let adjusted_reference_price = reference_price - inventory_skew;
+
+            if adjusted_reference_price <= dec!(0.01) {
+                return vec![]; // Prevent invalid prices
+            }
+
+            // 3. Calculate Spread around the adjusted price
+            let spread_factor_dec = Decimal::from_f64_retain(spread_factor).unwrap_or(dec!(0.01));
+            let spread = adjusted_reference_price * spread_factor_dec;
+            
+            if spread <= dec!(0) { return vec![]; }
+
+            let buy_price = (adjusted_reference_price - spread / dec!(2)).round_dp(2);
+            let sell_price = (adjusted_reference_price + spread / dec!(2)).round_dp(2);
+            
+            let size = Decimal::from_f64_retain(order_size_param).unwrap_or(dec!(1.0));
+
+            // 4. Place Orders
+            if buy_price > dec!(0) {
+                orders.push(Order { agent_id: DSG_AGENT_ID, price: buy_price, size, is_bid: true });
+            }
+            if sell_price > buy_price {
+                orders.push(Order { agent_id: DSG_AGENT_ID, price: sell_price, size, is_bid: false });
+            }
+        }
+        orders
+    }
+}
+
+
+
+
+4 - Update run_accelerated_simulation
+
+Update the runner to handle the HybridStrategy inputs (JSON and ONNX path) and use the updated DSGAgent constructor.
+
+
+
+// In nexus/src/hf_abm/simulator.rs
+
+// (Locate run_accelerated_simulation)
+// MODIFIED: Update signature and implementation
+pub fn run_accelerated_simulation(
+    mut config: SimulationConfig,
+    // NEW: Accept JSON and ONNX path directly
+    apex_strategy_json: String,
+    apex_onnx_path: Option<String>,
+    dsg_parameters: Vec<f64>
+) -> SimulationResult {
+    
+    let mut sim = Simulation::new(config.clone());
+
+    // 1. Initialize Apex Predator Agent (Hybrid)
+    // Initialize the HybridStrategy (handles ONNX loading internally)
+    let apex_strategy = match HybridStrategy::new(&apex_strategy_json, apex_onnx_path) {
+        Ok(strategy) => strategy,
+        Err(_e) => {
+            // Handle initialization failure (e.g., invalid JSON or ONNX error)
+            // Return a penalized result.
+            return SimulationResult { final_equity: dec!(0), ttt_fitness: -(config.num_ticks as f64) * 10.0 };
+        }
+    };
+        
+    let apex_agent = Box::new(ApexPredatorAgent { strategy: apex_strategy });
+    sim.add_agent(apex_agent);
+
+    // 2. Initialize DSG Agent
+    config.initial_capital *= dec!(100); // MM needs more capital
+    let mut sim_mm = Simulation::new(config);
+    // MODIFIED: Use the DSGAgent::new constructor
+    let dsg_agent = Box::new(DSGAgent::new(dsg_parameters));
+    sim_mm.add_agent(dsg_agent);
+
+    // Transfer the initialized DSG agent and its state to the main simulation
+    // (Ensure transfer logic is present)
+    // ...
+    
+    // 3. Run the simulation
+    sim.run(APEX_PREDATOR_ID)
+}
+
+// (Ensure run_accelerated_chimera_simulation also uses DSGAgent::new if present)
+/*
+pub fn run_accelerated_chimera_simulation(...) {
+    // ...
+    let dsg_agent = Box::new(DSGAgent::new(dsg_parameters));
+    // ...
+}
+*/
+
+
+

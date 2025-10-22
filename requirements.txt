@@ -1,0 +1,16 @@
+deap
+lightgbm
+tigramite
+numpy
+cma
+pandas
+scipy
+matplotlib
+polars
+dowhy
+scikit-learn
+torch
+learn2learn
+onnxruntime
+stable-baselines3
+gymnasium

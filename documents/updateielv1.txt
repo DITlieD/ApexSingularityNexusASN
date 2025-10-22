@@ -1,0 +1,54 @@
+Rust Nexus: IEL Implementation
+
+We integrate the IEL inference into the Rust core.
+
+1. Update nexus/src/velocity_core/l2_handler.rs
+
+Add helper methods to provide context (BBO) and calculate the IEL state.
+
+IMPORTANT: Merge this into the existing l2_handler.rs.
+
+
+// In nexus/src/velocity_core/l2_handler.rs
+
+// (Ensure imports for Decimal, dec!, MicrostructureFeatures are present)
+use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
+
+impl OrderBook {
+    // ... (Existing methods)
+
+    // (Ensure get_spread method exists - implemented in previous steps)
+    /*
+    pub fn get_spread(&self) -> Option<Decimal> { ... }
+    */
+
+    // NEW: Get the Best Bid/Ask (BBO) context for passive orders
+    pub fn get_bbo(&self) -> (Option<Decimal>, Option<Decimal>) {
+         let best_bid = self.bids.keys().next().map(|r| r.0);
+         let best_ask = self.asks.keys().next().cloned();
+         (best_bid, best_ask)
+    }
+    
+    // NEW: Calculate IEL State features (Must match Python definition: STATE_DIM=4)
+    // State: [Imbalance, Spread (normalized), Pressure, Signal Strength]
+    pub fn calculate_iel_state(&self, micro_features: &MicrostructureFeatures, signal_strength: Decimal) -> Option<Vec<Decimal>> {
+        
+        if let Some(spread) = self.get_spread() {
+            // Normalize spread. We use 50.0 as a baseline normalization factor. 
+            // This factor should be calibrated based on the market (e.g., BTC vs SOL).
+            let max_spread = dec!(50.0);
+            let normalized_spread = (spread / max_spread).clamp(dec!(0), dec!(1));
+
+            Some(vec![
+                micro_features.top_of_book_imbalance,
+                normalized_spread,
+                micro_features.book_pressure,
+                // Normalize signal strength (-1 to 1)
+                signal_strength.clamp(dec!(-1), dec!(1)), 
+            ])
+        } else {
+            None
+        }
+    }
+}

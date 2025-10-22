@@ -1,0 +1,19 @@
+{
+    "root": {
+        "primitive": "add",
+        "children": [
+            {
+                "primitive": {
+                    "Feature": 0
+                },
+                "children": []
+            },
+            {
+                "primitive": {
+                    "Feature": 1
+                },
+                "children": []
+            }
+        ]
+    }
+}

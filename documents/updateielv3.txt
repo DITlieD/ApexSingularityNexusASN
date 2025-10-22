@@ -1,0 +1,110 @@
+Update nexus/src/bin/main.rs (Integration)
+
+Load the IEL model during initialization and pass the necessary context during the execution phase.
+
+IMPORTANT: Merge these changes into main.rs.
+
+
+
+// In nexus/src/bin/main.rs
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // ... (Initialization)
+
+    // --- 1. Initialize Core Components ---
+    // ... (API Keys)
+
+    // Initialize Execution Client (MODIFIED)
+    let mut execution_client_instance = ExecutionClient::new(api_key.clone(), api_secret.clone());
+    
+    // Load IEL Model (NEW)
+    // The IEL model is loaded from the STRATEGY_DIR (../forge/) upon startup.
+    let iel_model_path = format!("{}iel_model.onnx", STRATEGY_DIR);
+    
+    // Check if the file exists before attempting to load
+    if std::path::Path::new(&iel_model_path).exists() {
+        // The load_iel_model method handles the actual loading and error reporting.
+        if let Err(e) = execution_client_instance.load_iel_model(&iel_model_path) {
+             println!("[IEL] WARNING: Failed to initialize IEL session: {}. Execution will use default tactics.", e);
+        }
+    } else {
+        println!("[IEL] INFO: iel_model.onnx not found at {}. Run forge/iel_trainer.py first.", iel_model_path);
+    }
+
+    // Wrap the instance in Arc for shared access
+    let execution_client = Arc::new(execution_client_instance);
+
+    // ... (Rest of initialization: Default Strategy, Global State, Tasks)
+
+    // --- 5. Main Event Loop ---
+    while let Some(msg) = read_public.next().await {
+        // ... (Message handling)
+
+            if let Some(order_book) = state_guard.order_books.get_mut(&symbol) {
+                // (Order book updates)
+
+                // b. Calculate Features
+                if let Some(features) = order_book.calculate_microstructure_features() {
+                    // (Feature vector and MAML context extraction)
+
+                    // Get OrderBook context for IEL (Best Bid/Ask) (NEW)
+                    let (best_bid_opt, best_ask_opt) = order_book.get_bbo();
+                    
+                    // Format the context for the ExecutionClient
+                    let ob_context = match (best_bid_opt, best_ask_opt) {
+                        (Some(bid), Some(ask)) => Some((bid, ask)),
+                        _ => None,
+                    };
+
+                    // c. Evaluate Strategies
+                    // ... (Loop through models)
+                                    
+                        // e. Evaluate Strategy (Hybrid)
+                        let strategy = model.strategy.read();
+                        if let Ok(output) = strategy.evaluate(&feature_vec, maml_context.as_deref()) {
+                            
+                            // Calculate IEL State (NEW)
+                            // The strategy's output signal strength is an input for IEL
+                            let iel_state = order_book.calculate_iel_state(&features, output.signal);
+
+                            // f. Execution
+                            let (side, qty) = // ... (Determine side and qty)
+                            
+                            if let Some(side) = side {
+                                if model.state == ModelState::Live {
+                                    // LIVE EXECUTION (With IEL)
+                                    let m_id = model.id;
+                                    let order_link_id = // ... (Generate link ID)
+
+                                    // Base payload (OrderType/Price will be set by IEL)
+                                    let base_payload = json!({
+                                        "category": "spot", "symbol": &model.symbol, "side": side,
+                                        "qty": qty.to_string(),
+                                        "orderLinkId": order_link_id
+                                    });
+
+                                    let client_clone = execution_client.clone();
+                                    // Pass the IEL state and OrderBook context
+                                    let iel_state_clone = iel_state.clone();
+                                    
+                                    tokio::spawn(async move {
+                                        // The execution client determines the tactic and applies it
+                                        match client_clone.place_order(&base_payload, iel_state_clone.as_ref(), ob_context).await {
+                                            Ok(response) => println!("[M{}] SUCCESS: Order ID {}", m_id, response.order_id),
+                                            Err(e) => println!("[M{}] ERROR: {}", m_id, e),
+                                        }
+                                    });
+                                    
+                                } else if model.state == ModelState::Shadow {
+                                    // ... (Shadow mode logic)
+                                }
+                            }
+                        }
+                    // ...
+                }
+            }
+        // ...
+    }
+    Ok(())
+}

@@ -1,0 +1,156 @@
+Implement Multi-Timeframe Analysis (MTFA)
+
+We enhance l2_handler.rs to track history and calculate rolling features (Volatility and Momentum).
+
+Modify nexus/src/velocity_core/l2_handler.rs. Merge this code carefully with the existing l2_handler.rs
+
+
+use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
+use std::collections::{BTreeMap, VecDeque}; // Import VecDeque
+use std::str::FromStr;
+use rust_decimal::prelude::ToPrimitive; // Import ToPrimitive
+
+// NEW: Struct to hold historical snapshots for MTFA
+#[derive(Clone, Copy)]
+struct HistoricalSnapshot {
+    mid_price: Decimal,
+}
+
+// MODIFIED: Add MTFA fields
+#[derive(Debug)]
+pub struct MicrostructureFeatures {
+    pub top_of_book_imbalance: Decimal,
+    pub book_pressure: Decimal,
+    pub clv_proxy: Decimal,
+    // MTFA Features
+    pub volatility_15m: Decimal,
+    pub momentum_15m: Decimal,
+}
+
+// --- Order Book Logic ---
+
+pub struct OrderBook {
+    pub symbol: String,
+    pub bids: BTreeMap<std::cmp::Reverse<Decimal>, Decimal>,
+    pub asks: BTreeMap<Decimal, Decimal>,
+    pub last_update_id: u64,
+    // NEW: History for MTFA
+    history: VecDeque<HistoricalSnapshot>,
+    max_history_len: usize,
+}
+
+impl OrderBook {
+    pub fn new(symbol: String) -> Self {
+        // Assuming roughly 1 update per second. 15 minutes = 900 seconds.
+        let history_len = 900; 
+        OrderBook {
+            symbol,
+            bids: BTreeMap::new(),
+            asks: BTreeMap::new(),
+            last_update_id: 0,
+            history: VecDeque::with_capacity(history_len + 1),
+            max_history_len: history_len,
+        }
+    }
+
+    // ... (apply_snapshot, apply_delta methods remain the same)
+
+    pub fn get_mid_price(&self) -> Option<Decimal> {
+        let best_bid = self.bids.keys().next().map(|r| r.0);
+        let best_ask = self.asks.keys().next();
+        match (best_bid, best_ask) {
+            (Some(bid), Some(ask)) => Some((bid + *ask) / dec!(2.0)),
+            _ => None,
+        }
+    }
+
+    // NEW: Update historical data for MTFA
+    fn update_history(&mut self, mid_price: Decimal) {
+        self.history.push_back(HistoricalSnapshot { mid_price });
+        if self.history.len() > self.max_history_len {
+            self.history.pop_front();
+        }
+    }
+
+    // NEW: Calculate MTFA features
+    fn calculate_mtfa_features(&self) -> (Decimal, Decimal) {
+        // Require at least half the window to start calculating
+        if self.history.len() < self.max_history_len / 2 {
+            return (dec!(0), dec!(0));
+        }
+
+        // 1. Momentum (Price change over the window)
+        let start_price = self.history.front().unwrap().mid_price;
+        let end_price = self.history.back().unwrap().mid_price;
+        let momentum = if start_price > dec!(0) {
+            (end_price - start_price) / start_price
+        } else {
+            dec!(0)
+        };
+
+        // 2. Volatility (Standard Deviation of Returns)
+        let mut returns = Vec::new();
+        // Use make_contiguous() for efficient window iteration on VecDeque
+        for window in self.history.make_contiguous().windows(2) {
+            let p1 = window[0].mid_price;
+            let p2 = window[1].mid_price;
+            if p1 > dec!(0) {
+                returns.push((p2 - p1) / p1);
+            }
+        }
+
+        let volatility = if returns.len() > 1 {
+            let n = Decimal::from(returns.len());
+            let mean: Decimal = returns.iter().sum::<Decimal>() / n;
+            // Sample variance
+            let variance: Decimal = returns.iter().map(|r| (*r - mean).powi(2)).sum::<Decimal>() / (n - dec!(1));
+            
+            // Calculate sqrt for std dev (Requires conversion to f64)
+            variance.to_f64().and_then(|v| Decimal::from_f64_retain(v.sqrt())).unwrap_or(dec!(0))
+        } else {
+            dec!(0)
+        };
+
+        (volatility, momentum)
+    }
+
+
+    // MODIFIED: Integrate MTFA and history updates
+    pub fn calculate_microstructure_features(&mut self) -> Option<MicrostructureFeatures> {
+        
+        if let (Some(best_bid), Some(best_ask)) = (self.bids.iter().next(), self.asks.iter().next()) {
+            let bid_size = *best_bid.1;
+            let ask_size = *best_ask.1;
+            let total_top_volume = bid_size + ask_size;
+
+            let imbalance = if total_top_volume > dec!(0) {
+                (bid_size - ask_size) / total_top_volume
+            } else {
+                dec!(0)
+            };
+            
+            // (Book pressure calculation omitted for brevity - use existing implementation)
+            let pressure = imbalance; // Placeholder
+
+            let mid_price = (best_bid.0.0 + *best_ask.0) / dec!(2.0);
+
+            // Update History
+            self.update_history(mid_price);
+
+            // Calculate MTFA
+            let (vol_15m, mom_15m) = self.calculate_mtfa_features();
+
+            Some(MicrostructureFeatures {
+                top_of_book_imbalance: imbalance,
+                book_pressure: pressure,
+                clv_proxy: dec!(0.5),
+                // NEW MTFA Features
+                volatility_15m: vol_15m,
+                momentum_15m: mom_15m,
+            })
+        } else {
+            None
+        }
+    }
+}

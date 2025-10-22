@@ -1,0 +1,86 @@
+1 - Update nexus/src/lib.rs (The Bridge)
+
+Update the Python bindings to match the new signature of run_accelerated_simulation.
+
+IMPORTANT: Merge this change into lib.rs.
+
+
+// In nexus/src/lib.rs
+
+// ... (Imports and Config definitions)
+
+// MODIFIED: Update run_accelerated_simulation_py signature
+#[pyfunction]
+fn run_accelerated_simulation_py(
+    config: PySimulationConfig,
+    apex_strategy_json: String,
+    // NEW: Added optional ONNX path input
+    apex_onnx_path: Option<String>, 
+    dsg_parameters: Vec<f64>
+) -> PyResult<f64> {
+    
+    let rust_config: SimulationConfig = config.into();
+
+    // The Rust runner now handles the strategy initialization internally.
+    let result = run_accelerated_simulation(rust_config, apex_strategy_json, apex_onnx_path, dsg_parameters);
+
+    Ok(result.ttt_fitness)
+}
+
+// (Ensure the pymodule definition reflects the updated function signature)
+// ...
+
+
+2 - Python Forge Modifications
+
+1. Update forge/chimera_engine.py
+
+Update the CMA-ES configuration to evolve the 4-parameter DSG genome.
+
+
+# In forge/chimera_engine.py
+
+import cma
+# ... (Other imports)
+
+# --- Main Chimera Engine Logic ---
+
+def find_dsg(sigma0=0.3, maxiter=50):
+    # ... (Checks)
+
+    # MODIFIED: Initial guess (4 parameters)
+    # [order_prob=0.5, spread_factor=0.01, inventory_sensitivity=0.0001, order_size=1.0]
+    initial_genome = [0.5, 0.01, 0.0001, 1.0]
+    
+    # MODIFIED: Define constraints (4 parameters)
+    options = {
+        # Bounds format: [[min_p1, min_p2, min_p3, min_p4], [max_p1, max_p2, max_p3, max_p4]]
+        'bounds': [
+            [0.01, 0.0001, 0.00001, 0.1], # Minima: [Prob, Spread, Sensitivity, Size]
+            [0.99, 0.05,   0.005,   10.0]  # Maxima
+        ], 
+        'maxiter': maxiter,
+        'tolfun': 1e-5,
+        'verbose': -9,
+        'verb_disp': 10,
+    }
+
+    # Run the optimization
+    print(f"Starting CMA-ES optimization (4 parameters)...")
+    try:
+         best_genome, es = cma.fmin2(objective_function, initial_genome, sigma0, options)
+    except Exception as e:
+        print(f"\nERROR during CMA-ES optimization. Ensure Rust 'nexus' module is compiled with the latest changes. Details: {e}")
+        return None
+
+    
+    print("--- Chimera Engine Run Complete ---")
+    if best_genome is not None:
+        print("Optimal Genome (DSG) found:")
+        print(f"  - Order Probability:     {best_genome[0]:.4f}")
+        print(f"  - Spread Factor:         {best_genome[1]:.6f}")
+        print(f"  - Inventory Sensitivity: {best_genome[2]:.6f}")
+        print(f"  - Order Size:            {best_genome[3]:.4f}")
+        # ...
+        return list(best_genome)
+    # ...

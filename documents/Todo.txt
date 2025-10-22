@@ -1,0 +1,72 @@
+Critical Missing Features for Live Operations
+Live Nexus Inventory Management (CRITICAL):
+
+Blueprint Reference: Phase I, Section 4 ("The Watchtower"), implicitly requires accurate PnL tracking.
+Current Status: The TradingModel in nexus/src/bin/main.rs has capital and inventory fields, but they are not updated based on actual order fills. The TODO comment in main.rs (// TODO: Update capital/inventory based on actual fills (requires private WS).) confirms this. Without this, the calculate_equity and check_sudden_death functions are inaccurate in a live trading scenario.
+What's Needed: Integration with Bybit's private WebSocket stream to receive real-time order fill confirmations and update each TradingModel's capital and inventory accordingly.
+Shadow Mode Evaluation & Performance-Based Hot-Swap Trigger:
+
+Blueprint Reference: Phase I, Section 4 ("The Pit Crew").
+Current Status: The start_pit_crew function in nexus/src/bin/main.rs detects new challenger files and immediately hot-swaps them into the active models. It does not implement the "Shadow Mode" evaluation where a challenger runs virtually and its performance is tracked against the champion before a swap is triggered based on performance metrics (e.g., >10% outperformance).
+What's Needed: Logic to run new challengers in a virtual "shadow mode," track their performance, and implement a performance-based trigger for the hot-swap.
+Liquidation Logic for Sudden Death:
+
+Blueprint Reference: Phase I, Section 4 ("The Watchtower").
+Current Status: When a model hits "Sudden Death" (equity <= dec!(0)), it's marked is_active = false. However, the TODO comment (// TODO: Implement immediate liquidation logic here if inventory != 0) indicates that actual market orders to close any open positions (liquidate inventory) are not yet sent.
+What's Needed: Code to send market orders to flatten any remaining inventory for a terminated model.
+Missing Features for Forge (R&D) and Advanced Nexus Intelligence
+Multi-Timeframe Analysis (MTFA):
+
+Blueprint Reference: Phase I, Section 1 ("Velocity Core"), "Real-time calculation of microstructure features... and MTFA alignment."
+Current Status: nexus/src/velocity_core/l2_handler.rs calculates microstructure features (imbalance, pressure, CLV proxy) at the current tick. There is no logic for aggregating these or other data points across different timeframes (e.g., 1m, 15m, 1h) or for ensuring "backward-looking" alignment.
+What's Needed: Implement MTFA logic within the Rust feature engineering pipeline.
+Intelligent Execution Layer (IEL) & ONNX Inference:
+
+Blueprint Reference: Phase I, Section 2 ("Execution Engine"), "Intelligent Execution Layer (IEL): An embedded RL agent...".
+Current Status: The nexus/Cargo.toml does not include onnxruntime-rs or tract, and there's no code for loading or inferring from ONNX models for execution tactics. Orders are currently market orders based on the GP signal.
+What's Needed: Integrate an ONNX runtime and develop/load RL agents to dynamically choose execution tactics (e.g., aggressive market order vs. passive limit order).
+Causal Discovery (Tigramite) Integration:
+
+Blueprint Reference: Phase II, Section 3 ("The Intelligence Core"), "Causal Discovery: Tigramite...".
+Current Status: The forge/gp_framework.py uses a static PrimitiveSet. There is no Python script that uses Tigramite to perform causal analysis or dynamically filters the features available to the GP based on a causal graph.
+What's Needed: Implement the causal analysis script and integrate it into the GP framework to dynamically build the PrimitiveSet based on causal relationships.
+Causal Fitness Backtester (Rust):
+
+Blueprint Reference: Phase II, Section 4 ("The Hybrid Crucible"), "Causal Fitness: TTT performance on historical data (using a fast, Rust-based vectorized backtester)."
+Current Status: The forge/fitness_ttt.py currently only calculates the Adversarial Fitness. The dedicated fast, vectorized Rust backtester for historical data is not yet implemented.
+What's Needed: Develop a new Rust module for a fast, vectorized backtester that can evaluate GP strategies against historical data, and expose it via PyO3.
+Rigorous HF-ABM Cost Modeling (Slippage, Market Impact):
+
+Blueprint Reference: Phase II, Section 2 ("HF-ABM Fidelity Verification"), "Rigorous Cost Modeling (MFT Requirement): Verify the simulation accounts for Fees, Spread Crossing, Slippage, and Market Impact."
+Current Status: nexus/src/hf_abm/simulator.rs correctly implements taker/maker fees. However, explicit modeling for slippage (price impact due to order size) and market impact (broader price movement due to large orders) is not present.
+What's Needed: Enhance the MatchingEngine and Simulation in Rust to incorporate realistic slippage and market impact models.
+Advanced HF-ABM Behavioral Models:
+
+Blueprint Reference: Phase II, Section 2 ("HF-ABM Fidelity Verification"), "Verify parameterized behavioral models are implemented (Market Makers, HFTs, Toxic Flow Providers)."
+Current Status: The DSGAgent in nexus/src/hf_abm/simulator.rs is a basic market-making agent. More complex behavioral models (e.g., high-frequency traders, toxic flow providers, informed traders) are not yet implemented.
+What's Needed: Develop more sophisticated Agent implementations in Rust to increase the realism and complexity of the HF-ABM.
+Surrogate-Assisted Evolution (SAE):
+
+Blueprint Reference: Phase II, Section 3 ("The Intelligence Core"), "Surrogate-Assisted Evolution (SAE): LightGBM acts as the Fitness Oracle...".
+Current Status: forge/sae_oracle.py is a placeholder file. The logic for vectorizing GP trees, training a LightGBM fitness oracle, and using it to screen individuals before full HF-ABM evaluation is missing.
+What's Needed: Implement the SAE pipeline, including a GP tree vectorizer and the LightGBM oracle.
+MAML Integration:
+
+Blueprint Reference: Phase II, Section 3 ("The Intelligence Core"), "MAML: PyTorch and learn2learn are used for Model-Agnostic Meta-Learning...".
+Current Status: PyTorch and learn2learn are not in forge/requirements.txt, and there is no code for MAML training or inference.
+What's Needed: Integrate PyTorch and learn2learn to implement MAML for rapid adaptation.
+Continuous Weight Optimization (CWO):
+
+Blueprint Reference: Phase I, Section 4 ("The Adaptation Crucible").
+Current Status: There is no logic in nexus/src/bin/main.rs or elsewhere to dynamically reallocate capital weights between the 6 models every 60 seconds.
+What's Needed: Implement the CWO algorithm to adjust capital allocation based on model performance.
+Advanced Validation (Walk-Forward, Monte Carlo, Causal Validation):
+
+Blueprint Reference: Phase IV ("Validation and Philosophy").
+Current Status: These are high-level validation methodologies, and the specific code or frameworks for performing Walk-Forward Optimization, Monte Carlo simulations, or Causal Refutation Analysis (DoWhy) are not present.
+What's Needed: Develop scripts and integrate libraries to perform these rigorous validation steps.
+Active polars Usage:
+
+Blueprint Reference: Phase I, Section 1 ("Velocity Core"), "Technology: polars (high-speed DataFrame library)"; Phase II, Section 1 ("The Rust Accelerator"), "Data Acceleration: All data loading, MTFA alignment, and feature engineering (VMD) are performed using the Rust polars library...".
+Current Status: polars is in Cargo.toml, but the provided Rust code (l2_handler.rs, simulator.rs) does not actively use polars for its data structures or operations. The Python code also doesn't explicitly use polars via its Python API for data acceleration.
+What's Needed: Integrate polars into the Rust codebase for data handling and feature engineering, and ensure Python leverages its polars bindings for data acceleration.
