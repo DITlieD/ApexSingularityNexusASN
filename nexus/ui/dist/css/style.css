@@ -1,0 +1,113 @@
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #121212;
+    color: #e0e0e0;
+    margin: 0;
+    padding: 0;
+}
+
+header {
+    background-color: #1e1e1e;
+    padding: 1rem 2rem;
+    border-bottom: 2px solid #007acc;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+h1 {
+    margin: 0;
+    color: #007acc;
+}
+
+.status {
+    font-size: 0.9rem;
+}
+
+#connection-status.connected { color: #4caf50; }
+#connection-status.disconnected { color: #f44336; }
+
+main {
+    padding: 2rem;
+}
+
+section {
+    background-color: #1e1e1e;
+    padding: 1.5rem;
+    margin-bottom: 2rem;
+    border-radius: 8px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+}
+
+h2 {
+    color: #007acc;
+    margin-top: 0;
+}
+
+/* KPIs */
+.kpi-container {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.kpi {
+    flex: 1;
+    min-width: 150px;
+    background-color: #252526;
+    padding: 1rem;
+    border-radius: 5px;
+    text-align: center;
+}
+
+.kpi h3 {
+    margin: 0 0 0.5rem 0;
+    font-size: 0.9rem;
+    color: #aaaaaa;
+}
+
+.kpi p {
+    margin: 0;
+    font-size: 1.5rem;
+    font-weight: bold;
+}
+
+/* Table Styling */
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th, td {
+    padding: 0.75rem 1rem;
+    text-align: left;
+    border-bottom: 1px solid #333333;
+}
+
+th {
+    background-color: #252526;
+    color: #007acc;
+}
+
+tr:hover {
+    background-color: #333333;
+}
+
+/* State Colors (Ensure these match the Rust enum names: Live, Shadow, Terminated) */
+.state-Live { color: #4caf50; font-weight: bold; }
+.state-Shadow { color: #ff9800; }
+.state-Terminated { color: #f44336; font-weight: bold; text-decoration: line-through; }
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    .status {
+        margin-top: 0.5rem;
+    }
+    main {
+        padding: 1rem;
+    }
+}

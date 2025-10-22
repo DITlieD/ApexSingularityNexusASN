@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Apex Singularity Nexus - Dashboard</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+</head>
+<body>
+    <header>
+        <h1>ASN Crucible Dashboard</h1>
+        <div class="status">
+            Connection: <span id="connection-status" class="disconnected">Disconnected</span> | 
+            Latency: <span id="latency">N/A</span>
+        </div>
+    </header>
+
+    <main>
+        <section class="overview">
+            <h2>System Overview</h2>
+            <div class="kpi-container">
+                <div class="kpi">
+                    <h3>Total Equity (USD)</h3>
+                    <p id="total-equity">$0.00</p>
+                </div>
+                <div class="kpi">
+                    <h3>Active Models</h3>
+                    <p id="active-models">0 / 6</p>
+                </div>
+                <div class="kpi">
+                    <h3>Total Realized PnL</h3>
+                    <p id="total-pnl">$0.00</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="performance-chart">
+            <h2>Total Equity Over Time (Real-time)</h2>
+            <div id="equity-chart"></div>
+        </section>
+
+        <section class="models">
+            <h2>Model Status (6 Models: 2x BTC, 2x ETH, 2x SOL)</h2>
+            <table id="models-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Symbol</th>
+                        <th>State</th>
+                        <th>Equity (USD)</th>
+                        <th>Inventory</th>
+                        <th>Realized PnL</th>
+                        <th>Perf. Score (PnL/Tick)</th>
+                        <th>Ticks</th>
+                    </tr>
+                </thead>
+                <tbody id="models-body">
+                    </tbody>
+            </table>
+        </section>
+    </main>
+
+    <script src="js/app.js"></script>
+</body>
+</html>
