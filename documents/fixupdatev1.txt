@@ -1,0 +1,146 @@
+This is a critical set of compilation errors, but they are systematic and fixable. The errors primarily stem from two main areas in your hybrid architecture:
+
+1.  **Outdated ONNX Runtime API:** The Rust ecosystem for ONNX inference has shifted. The errors regarding `Session::builder`, `GraphOptimizationLevel::Level3`, and `try_extract_tensor` indicate that your code is likely using the deprecated `onnxruntime-rs` crate or a very old version of the `ort` crate.
+2.  **Polars/PyO3 Integration:** The error `E0277` indicates that the Rust compiler cannot find the necessary implementation to convert a Python DataFrame object (`PyDataFrame`) into a native Rust Polars `DataFrame`.
+
+Here is a prioritized To-Do list to resolve these issues and modernize the Nexus codebase.
+
+### Phase 1: Migrate to the Modern `ort` Crate (High Priority)
+
+The most pressing errors are related to the ONNX integration. You need to ensure you are using the modern `ort` crate (version 2.0 or later is recommended) and update the API calls.
+
+**1. [ ] Update Dependencies (`Cargo.toml`)**
+
+  * Remove any dependencies on `onnxruntime` or `onnxruntime-sys`.
+  * Add the modern `ort` crate:
+    ```bash
+    cargo add ort
+    ```
+
+**2. [ ] Refactor `use` Statements**
+
+  * Globally replace all instances of `use onnxruntime::...` with `use ort::...`.
+
+**3. [ ] Fix Session Initialization (Errors E0599: `builder` and `Level3`)**
+
+The session building pattern has changed significantly. `Session::builder()` is now called directly, and optimization levels have been renamed.
+
+  * *Affected files:* `src/velocity_core/execution.rs:147-148`, `src/velocity_core/iel.rs:33-34`, `src/inference/gp_interpreter.rs:85-86`.
+
+<!-- end list -->
+
+```rust
+// --- OLD CODE (Example from src/velocity_core/iel.rs:33) ---
+// let model = Session::builder(IEL_ONNX_ENV.clone())?
+//     .with_optimization_level(GraphOptimizationLevel::Level3)?
+//    // ... load model ...
+
+// --- NEW CODE (Modern 'ort' approach) ---
+use ort::{Session, GraphOptimizationLevel};
+
+// In modern 'ort', the environment is often initialized implicitly or globally.
+let session_builder = Session::builder()?
+    // Change Level3 to All
+    .with_optimization_level(GraphOptimizationLevel::All)?;
+
+// You must finalize the builder by loading the model, e.g.:
+// let session = session_builder.commit_from_file("path/to/model.onnx")?;
+```
+
+**4. [ ] Fix Tensor Extraction (Error E0599: `try_extract_tensor`)**
+
+The methods for retrieving data from the output (which are now typically `ort::Value` structs) have changed.
+
+  * *Affected file:* `src/velocity_core/execution.rs:208`.
+
+<!-- end list -->
+
+```rust
+// --- OLD CODE ---
+// if let Ok(logits) = outputs[0].try_extract_tensor::<f32>() {
+//     // ...
+// }
+
+// --- NEW CODE (using 'ort') ---
+// The most efficient way is usually to extract an ndarray view directly.
+if let Ok(logits_view) = outputs[0].try_extract_view::<f32>() {
+   // Process logits_view (which is an ndarray::ArrayViewD<f32>)
+   // ...
+}
+
+// Alternatively, if you need an owned tensor:
+// if let Ok(output_tensor) = outputs[0].try_extract_tensor::<f32>() {
+//     let logits_array = output_tensor.view().to_owned();
+//     // ...
+// }
+```
+
+### Phase 2: Fix Polars/PyO3 Integration (High Priority)
+
+To fix the `E0277` trait bound error, you need the `pyo3-polars` helper crate, which provides the necessary `From<PyDataFrame>` implementation.
+
+**1. [ ] Update Dependencies (`Cargo.toml`)**
+
+  * Add the `pyo3-polars` crate.
+  * Ensure the `pyo3` feature is enabled for the main `polars` crate.
+  * **Crucial:** Verify that the versions of `polars`, `pyo3`, and `pyo3-polars` are compatible.
+
+<!-- end list -->
+
+```toml
+# Example Cargo.toml snippet (check for latest compatible versions)
+[dependencies]
+# ...
+polars = { version = "0.41.3", features = ["lazy", "pyo3"] }
+pyo3-polars = "0.13.0"
+pyo3 = "0.21"
+```
+
+**2. [ ] Update Imports and Conversion**
+
+  * Ensure `src/lib.rs` imports `PyDataFrame` from `pyo3_polars`.
+  * *Affected file:* `src/lib.rs:112, 121`.
+
+<!-- end list -->
+
+```rust
+use polars::prelude::DataFrame;
+// Ensure this import is present
+use pyo3_polars::PyDataFrame;
+
+// The conversion should now work, as pyo3-polars implements the trait:
+fn process_data(data: PyDataFrame) {
+    let rust_df: DataFrame = data.into();
+    // ...
+}
+
+// Note: If versioning issues persist, a temporary workaround is to access
+// the inner DataFrame directly, as PyDataFrame is a wrapper struct:
+// let rust_df: DataFrame = data.0;
+```
+
+### Phase 3: Clean Up Warnings (Low Priority)
+
+Once the errors are resolved, clean up the warnings for better code hygiene.
+
+**1. [ ] Remove Unused Imports**
+
+  * `src/hf_abm/simulator.rs`: Remove `GPStrategy`, `StrategyOutput`, `LogNormal`, `Distribution`.
+  * `src/velocity_core/iel.rs`: Remove `ToPrimitive`.
+  * `src/inference/gp_interpreter.rs`: Remove `IxDyn`.
+  * `src/backtester/vectorized_backtester.rs`: Remove `StrategyOutput`.
+  * `src/lib.rs`: Remove `HybridStrategy`.
+  * `src/velocity_core/execution.rs`: Remove `digest::KeyInit` (at lines 3 and 23).
+
+**2. [ ] Remove Unnecessary Mutability**
+
+  * `src/hf_abm/simulator.rs:159`: Remove the `mut` from the `agent` parameter.
+
+<!-- end list -->
+
+```rust
+// Change from:
+pub fn add_agent(&mut self, mut agent: Box<dyn Agent>) {
+// Change to:
+pub fn add_agent(&mut self, agent: Box<dyn Agent>) {
+```

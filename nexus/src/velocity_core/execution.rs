@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use hex;
-use hmac::{Hmac, Mac, digest::KeyInit};
+use hmac::{Hmac, Mac};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
@@ -8,7 +8,7 @@ use sha2::Sha256;
 use std::sync::Arc;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
-use onnxruntime::{environment::Environment, session::Session, GraphOptimizationLevel};
+use ort::{value::Value as OrtValue, session::Session, session::builder::GraphOptimizationLevel};
 use ndarray::Array;
 
 // --- Private WebSocket Module ---
@@ -20,7 +20,7 @@ pub mod private_ws {
     use tokio::sync::mpsc;
     use tokio_tungstenite::connect_async;
     use url::Url;
-    use hmac::{Hmac, Mac, digest::KeyInit};
+    use hmac::{Hmac, Mac};
     use sha2::Sha256;
 
     const BYBIT_TESTNET_PRIVATE_WS_URL: &str = "wss://stream-testnet.bybit.com/v5/private";
@@ -93,14 +93,6 @@ pub mod private_ws {
     }
 }
 
-// --- ONNX Runtime Environment ---
-lazy_static::lazy_static! {
-    static ref IEL_ONNX_ENV: Arc<Environment> = Arc::new(Environment::builder()
-        .with_name("ASN_IEL")
-        .build()
-        .expect("Failed to initialize IEL ONNX Runtime environment"));
-}
-
 const BYBIT_TESTNET_API_URL: &str = "https://api-testnet.bybit.com";
 
 // --- API Data Structures ---
@@ -129,7 +121,7 @@ pub struct ExecutionClient {
     api_key: String,
     api_secret: String,
     client: Client,
-    iel_session: Option<Arc<Session<'static>>>,
+    iel_session: Option<Arc<Session>>,
 }
 
 impl ExecutionClient {
@@ -144,77 +136,71 @@ impl ExecutionClient {
 
     pub fn load_iel_model(&mut self, path: &str) -> Result<()> {
         println!("[IEL] Loading ONNX session from: {}", path);
-        let session = Session::builder(IEL_ONNX_ENV.clone())?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_op_num_threads(1)?
-            .with_model_from_file(path)?;
-        self.iel_session = Some(Arc::new(session));
-        println!("[IEL] Model loaded successfully.");
-        Ok(())
-    }
-
-    async fn get_server_time(&self) -> Result<String> {
-        let res = self.client.get(format!("{}/v5/market/time", BYBIT_TESTNET_API_URL)).send().await?.json::<TimeResult>().await?;
-        Ok(res.result.time_nano[..res.result.time_nano.len() - 6].to_string())
-    }
-
-    pub async fn place_order(&self, base_payload: &Value, iel_state: Option<&Vec<Decimal>>, order_book_context: Option<(Decimal, Decimal)>) -> Result<OrderResult> {
-        let mut payload = base_payload.clone();
-        let tactic = self.determine_tactic(iel_state);
-        self.apply_tactic(&mut payload, tactic, order_book_context)?;
-
-        let timestamp = self.get_server_time().await?;
-        let recv_window = "20000";
-        let request_body = serde_json::to_string(&payload)?;
-
-        let mut sig_payload = String::new();
-        sig_payload.push_str(&timestamp);
-        sig_payload.push_str(&self.api_key);
-        sig_payload.push_str(recv_window);
-        sig_payload.push_str(&request_body);
-
-        type HmacSha256 = Hmac<Sha256>;
-        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(self.api_secret.as_bytes())?;
-        mac.update(sig_payload.as_bytes());
-        let signature = hex::encode(mac.finalize().into_bytes());
-
-        let res = self.client.post(format!("{}/v5/order/create", BYBIT_TESTNET_API_URL))
-            .header("X-BAPI-API-KEY", &self.api_key)
-            .header("X-BAPI-TIMESTAMP", &timestamp)
-            .header("X-BAPI-SIGN", &signature)
-            .header("X-BAPI-RECV-WINDOW", recv_window)
-            .header("Content-Type", "application/json")
-            .body(request_body)
-            .send().await?;
-
-        let res_text = res.text().await?;
-        let order_response: OrderResponse = serde_json::from_str(&res_text)?;
-
-        if order_response.ret_code == 0 {
-            Ok(order_response.result)
-        } else {
-            Err(anyhow!("Bybit API Error: {} (ret_code: {})", order_response.ret_msg, order_response.ret_code))
-        }
-    }
-
-    fn determine_tactic(&self, iel_state: Option<&Vec<Decimal>>) -> u32 {
-        const DEFAULT_TACTIC: u32 = 0; // Aggressive Market Order
-        if let (Some(session), Some(state)) = (&self.iel_session, iel_state) {
-            if state.len() != 4 { return DEFAULT_TACTIC; }
-
-            let state_f32: Vec<f32> = state.iter().map(|d| d.to_f32().unwrap_or(0.0)).collect();
-            if let Ok(input_tensor) = Array::from_shape_vec((1, 4), state_f32) {
-                if let Ok(outputs) = session.run(vec![input_tensor.into()]) {
-                    if let Ok(logits) = outputs[0].try_extract_tensor::<f32>() {
-                        return logits.iter().enumerate()
-                            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                            .map(|(i, _)| i as u32)
-                            .unwrap_or(DEFAULT_TACTIC);
-                    }
+        let session = Session::builder()?            .with_optimization_level(GraphOptimizationLevel::Level3)?            .with_intra_threads(1)?            .commit_from_file(path)?;        self.iel_session = Some(Arc::new(session));        println!("[IEL] Model loaded successfully.");        Ok(())    }
+        
+            async fn get_server_time(&self) -> Result<String> {
+                let res = self.client.get(format!("{}/v5/market/time", BYBIT_TESTNET_API_URL)).send().await?.json::<TimeResult>().await?;
+                Ok(res.result.time_nano[..res.result.time_nano.len() - 6].to_string())
+            }
+        
+            pub async fn place_order(&self, base_payload: &Value, iel_state: Option<&Vec<Decimal>>, order_book_context: Option<(Decimal, Decimal)>) -> Result<OrderResult> {
+                let mut payload = base_payload.clone();
+                let tactic = self.determine_tactic(iel_state);
+                self.apply_tactic(&mut payload, tactic, order_book_context)?;
+        
+                let timestamp = self.get_server_time().await?;
+                let recv_window = "20000";
+                let request_body = serde_json::to_string(&payload)?;
+        
+                let mut sig_payload = String::new();
+                sig_payload.push_str(&timestamp);
+                sig_payload.push_str(&self.api_key);
+                sig_payload.push_str(recv_window);
+                sig_payload.push_str(&request_body);
+        
+                type HmacSha256 = Hmac<Sha256>;
+                let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(self.api_secret.as_bytes())?;
+                mac.update(sig_payload.as_bytes());
+                let signature = hex::encode(mac.finalize().into_bytes());
+        
+                let res = self.client.post(format!("{}/v5/order/create", BYBIT_TESTNET_API_URL))
+                    .header("X-BAPI-API-KEY", &self.api_key)
+                    .header("X-BAPI-TIMESTAMP", &timestamp)
+                    .header("X-BAPI-SIGN", &signature)
+                    .header("X-BAPI-RECV-WINDOW", recv_window)
+                    .header("Content-Type", "application/json")
+                    .body(request_body)
+                    .send().await?;
+        
+                let res_text = res.text().await?;
+                let order_response: OrderResponse = serde_json::from_str(&res_text)?;
+        
+                if order_response.ret_code == 0 {
+                    Ok(order_response.result)
+                } else {
+                    Err(anyhow!("Bybit API Error: {} (ret_code: {})", order_response.ret_msg, order_response.ret_code))
                 }
             }
-        }
-        DEFAULT_TACTIC
+        
+            fn determine_tactic(&self, iel_state: Option<&Vec<Decimal>>) -> u32 {
+                const DEFAULT_TACTIC: u32 = 0; // Aggressive Market Order
+                if let (Some(session), Some(state)) = (&self.iel_session, iel_state) {
+                    if state.len() != 4 { return DEFAULT_TACTIC; }
+        
+                    let state_f32: Vec<f32> = state.iter().map(|d| d.to_f32().unwrap_or(0.0)).collect();
+                                if let Ok(input_tensor) = Array::from_shape_vec((1, 4), state_f32) {
+                                    let inputs = [OrtValue::from_array(input_tensor.into_dyn()).unwrap()];
+                                    if let Ok(outputs) = session.run(&inputs) {
+                                        if let Ok(logits) = outputs[0].try_extract_tensor::<f32>() {
+                                            let view = logits.view();
+                                            return view.iter().enumerate()
+                                                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                                                .map(|(i, _)| i as u32)
+                                                .unwrap_or(DEFAULT_TACTIC);
+                                        }
+                                    }
+                                }                }
+                DEFAULT_TACTIC
     }
 
     fn apply_tactic(&self, payload: &mut Value, tactic: u32, context: Option<(Decimal, Decimal)>) -> Result<()> {

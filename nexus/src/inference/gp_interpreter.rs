@@ -3,6 +3,9 @@ use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use thiserror::Error;
+use ort::{value::Value as OrtValue, session::Session, session::builder::GraphOptimizationLevel};
+use ndarray::Array;
+use std::sync::Arc;
 
 // ... (Errors and Primitive enum remain the same as handover) ...
 
@@ -14,6 +17,8 @@ pub enum InterpreterError {
     InvalidNode,
     #[error("Evaluation failed: {0}")]
     Evaluation(String),
+    #[error("ORT error: {0}")]
+    Ort(#[from] ort::Error),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -55,14 +60,6 @@ pub struct GPStrategy {
 }
 
 use rust_decimal::prelude::ToPrimitive;
-use onnxruntime::session::Session;
-use onnxruntime::ndarray::{Array, IxDyn};
-use onnxruntime::environment::Environment;
-use std::sync::Arc;
-
-lazy_static::lazy_static! {
-    static ref IEL_ONNX_ENV: Arc<Environment> = Arc::new(Environment::builder().with_name("IEL_ONNX_ENV").build().unwrap());
-}
 
 pub struct HybridStrategy {
     gp_strategy: GPStrategy,
@@ -78,21 +75,19 @@ impl HybridStrategy {
     pub fn evaluate(&self, features: &[Decimal], external_features: Option<&[f32]>) -> Result<StrategyOutput, InterpreterError> {
         let gp_output = self.gp_strategy.evaluate(features)?;
         if let (Some(path), Some(ext_feats)) = (&self.onnx_path, external_features) {
-use onnxruntime::GraphOptimizationLevel;
-
-// ...
-
-            let session = Session::builder(IEL_ONNX_ENV.clone())?
+            let session = Session::builder()?
                 .with_optimization_level(GraphOptimizationLevel::Level3)?
-                .with_model_from_file(path)
-                .map_err(|e| InterpreterError::Evaluation(e.to_string()))?;
+                .commit_from_file(path)?;
+
             let input_tensor = Array::from_shape_vec((1, ext_feats.len()), ext_feats.to_vec())
                 .map_err(|e| InterpreterError::Evaluation(e.to_string()))?;
-            let inputs = vec![input_tensor.into_dyn()];
-            let results = session.run(inputs)
-                .map_err(|e| InterpreterError::Evaluation(e.to_string()))?;
+            
+            let inputs = [OrtValue::from_array(input_tensor.into_dyn()).unwrap()];
+            let results = session.run(&inputs)?;
+            
             if let Ok(output_tensor) = results[0].try_extract_tensor::<f32>() {
-                let onnx_logit = output_tensor.iter().next().unwrap_or(&0.0);
+                let view = output_tensor.view();
+                let onnx_logit = view.iter().next().unwrap_or(&0.0);
                 let combined_logit = gp_output.win_probability.to_f64().unwrap_or(0.5) + *onnx_logit as f64;
                 let probability = Decimal::from_f64_retain(1.0 / (1.0 + (-combined_logit).exp())).unwrap_or(dec!(0.5));
                 Ok(StrategyOutput { win_probability: probability })

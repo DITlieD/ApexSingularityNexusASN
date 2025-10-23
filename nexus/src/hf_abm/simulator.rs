@@ -2,9 +2,7 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::collections::{BTreeMap, HashMap, BinaryHeap};
 use std::cmp::Reverse;
-use crate::inference::gp_interpreter::{GPStrategy, HybridStrategy, StrategyOutput};
-
-use rand_distr::{LogNormal, Distribution};
+use crate::inference::gp_interpreter::{HybridStrategy};
 use rust_decimal::prelude::{ToPrimitive, FromPrimitive};
 
 // (Event-Driven Simulation Components: SimEvent, EventType - unchanged)
@@ -156,7 +154,7 @@ impl Simulation {
         }
     }
 
-    pub fn add_agent(&mut self, mut agent: Box<dyn Agent>) {
+    pub fn add_agent(&mut self, agent: Box<dyn Agent>) {
         let agent_id = agent.id();
         self.agent_states.insert(agent_id, AgentState::new(self.config.initial_capital));
         self.agents.insert(agent_id, agent);

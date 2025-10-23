@@ -39,15 +39,14 @@ thiserror = "1.0"
 notify = "6.1.1"
 parking_lot = "0.12"
 
-polars = { version = "0.41.0", features = ["lazy", "ndarray", "serde", "temporal", "dtype-decimal", "performant", "rolling_window"] }
-pyo3-polars = { version = "0.13.0", features = ["derive"] }
+arrow2 = { version = "0.17.4", features = ["io_ipc"] }
 
 chrono = "0.4.38"
 uuid = { version = "1.8", features = ["v4", "fast-rng"] }
 
 tract-onnx = "0.21.0" 
 
-onnxruntime = "0.0.14"
+ort = { version = "2.0.0-rc.10" }
 ndarray = "0.15.1"
 lazy_static = "1.4.0"
 rand = "0.8"

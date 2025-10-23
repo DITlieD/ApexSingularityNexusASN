@@ -1,9 +1,11 @@
-use crate::inference::gp_interpreter::{GPStrategy, StrategyOutput};
-use polars::prelude::*;
+use crate::inference::gp_interpreter::{GPStrategy};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use rust_decimal::prelude::ToPrimitive;
+use arrow2::array::{Array, PrimitiveArray};
+use arrow2::chunk::Chunk;
+use arrow2::datatypes::DataType;
 
 #[derive(Debug, Clone)]
 pub struct BacktestConfig {
@@ -32,24 +34,53 @@ pub struct BacktestResult {
 
 pub fn run_vectorized_backtest(
     strategy: &GPStrategy,
-    data: &DataFrame,
+    data: &Chunk<Box<dyn Array>>,
+    schema: &arrow2::datatypes::Schema,
     config: &BacktestConfig,
     feature_names: &[String],
 ) -> Result<BacktestResult> {
     
     let target_capital = config.initial_capital * config.target_capital_factor;
-    let num_rows = data.height();
+    let num_rows = data.len();
     if num_rows == 0 {
         return Ok(BacktestResult { ttt_fitness: 0.0, final_equity: config.initial_capital });
     }
 
-    let close_prices = data.column("close")?.decimal()?.clone();
+    // Find column indices
+    let close_idx = schema.fields.iter().position(|f| f.name == "close").ok_or_else(|| anyhow!("'close' column not found"))?;
+    let feature_indices: Vec<usize> = feature_names.iter()
+        .map(|name| schema.fields.iter().position(|f| f.name == *name).ok_or_else(|| anyhow!(format!("Feature '{}' not found", name))))
+        .collect::<Result<_, _>>()?;
+
+    // Extract close prices array
+    let close_prices_arr = data.arrays()[close_idx]
+        .as_any()
+        .downcast_ref::<PrimitiveArray<i128>>()
+        .ok_or_else(|| anyhow!("'close' column is not of type Decimal128"))?;
+    
+    let scale = if let DataType::Decimal(_, scale) = close_prices_arr.data_type() {
+        scale
+    } else {
+        return Err(anyhow!("'close' column is not a Decimal type"));
+    };
+
+    // Extract feature data into a row-oriented structure
     let mut feature_data: Vec<Vec<Decimal>> = vec![vec![dec!(0); feature_names.len()]; num_rows];
-    for (col_idx, name) in feature_names.iter().enumerate() {
-        let series = data.column(name)?.decimal()?;
-        for (row_idx, value) in series.iter().enumerate() {
+    for (col_idx, &arrow_idx) in feature_indices.iter().enumerate() {
+        let array = data.arrays()[arrow_idx]
+            .as_any()
+            .downcast_ref::<PrimitiveArray<i128>>()
+            .ok_or_else(|| anyhow!(format!("Feature column '{}' is not of type Decimal128", feature_names[col_idx])))?;
+        
+        let feature_scale = if let DataType::Decimal(_, scale) = array.data_type() {
+            scale
+        } else {
+            return Err(anyhow!(format!("Feature column '{}' is not a Decimal type", feature_names[col_idx])));
+        };
+
+        for (row_idx, value) in array.iter().enumerate() {
             if let Some(val) = value {
-                 feature_data[row_idx][col_idx] = Decimal::from_i128_with_scale(val, series.scale() as u32);
+                feature_data[row_idx][col_idx] = Decimal::from_i128_with_scale(*val, feature_scale as u32);
             }
         }
     }
@@ -59,8 +90,8 @@ pub fn run_vectorized_backtest(
     let mut time_to_target: Option<usize> = None;
 
     for i in 0..num_rows {
-        let current_price = match close_prices.get(i) {
-            Some(val) => Decimal::from_i128_with_scale(val, close_prices.scale() as u32),
+        let current_price = match close_prices_arr.get(i) {
+            Some(val) => Decimal::from_i128_with_scale(val, scale as u32),
             None => dec!(0),
         };
         if current_price <= dec!(0) { continue; }
@@ -111,8 +142,8 @@ pub fn run_vectorized_backtest(
         }
     }
 
-    let last_price = match close_prices.get(num_rows - 1) {
-        Some(val) => Decimal::from_i128_with_scale(val, close_prices.scale() as u32),
+    let last_price = match close_prices_arr.get(num_rows - 1) {
+        Some(val) => Decimal::from_i128_with_scale(val, scale as u32),
         None => dec!(0),
     };
     let final_equity = cash + inventory * last_price;

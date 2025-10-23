@@ -1,27 +1,52 @@
-use polars::prelude::*;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use rust_decimal::prelude::ToPrimitive;
+use arrow2::array::{Array, PrimitiveArray};
+use arrow2::chunk::Chunk;
+use arrow2::datatypes::DataType;
 
 // Re-use the configuration and result structures from the vectorized backtester
 use super::vectorized_backtester::{BacktestConfig, BacktestResult};
 
-/// Runs a high-speed backtest using pre-computed win probabilities from a Polars DataFrame.
+/// Runs a high-speed backtest using pre-computed win probabilities from an Arrow Chunk.
 pub fn run_signal_backtest(
-    data: &DataFrame,
+    data: &Chunk<Box<dyn Array>>,
+    schema: &arrow2::datatypes::Schema,
     config: &BacktestConfig,
 ) -> Result<BacktestResult> {
     
     let target_capital = config.initial_capital * config.target_capital_factor;
-    let num_rows = data.height();
+    let num_rows = data.len();
     if num_rows == 0 {
         return Ok(BacktestResult { ttt_fitness: 0.0, final_equity: config.initial_capital });
     }
 
-    // 1. Data Preparation (Expects Decimal types)
-    let close_prices = data.column("close")?.decimal()?.clone();
-    let win_probs = data.column("win_probability")?.decimal()?.clone();
+    // 1. Data Preparation
+    let close_idx = schema.fields.iter().position(|f| f.name == "close").ok_or_else(|| anyhow!("'close' column not found"))?;
+    let win_prob_idx = schema.fields.iter().position(|f| f.name == "win_probability").ok_or_else(|| anyhow!("'win_probability' column not found"))?;
+
+    let close_prices_arr = data.arrays()[close_idx]
+        .as_any()
+        .downcast_ref::<PrimitiveArray<i128>>()
+        .ok_or_else(|| anyhow!("'close' column is not of type Decimal128"))?;
+    
+    let close_scale = if let DataType::Decimal(_, scale) = close_prices_arr.data_type() {
+        scale
+    } else {
+        return Err(anyhow!("'close' column is not a Decimal type"));
+    };
+
+    let win_probs_arr = data.arrays()[win_prob_idx]
+        .as_any()
+        .downcast_ref::<PrimitiveArray<i128>>()
+        .ok_or_else(|| anyhow!("'win_probability' column is not of type Decimal128"))?;
+
+    let win_prob_scale = if let DataType::Decimal(_, scale) = win_probs_arr.data_type() {
+        scale
+    } else {
+        return Err(anyhow!("'win_probability' column is not a Decimal type"));
+    };
 
     // 2. Initialization
     let mut cash = config.initial_capital;
@@ -30,14 +55,14 @@ pub fn run_signal_backtest(
 
     // 3. The Backtest Loop
     for i in 0..num_rows {
-        let current_price = match close_prices.get(i) {
-            Some(val) => Decimal::from_i128_with_scale(val, close_prices.scale() as u32),
+        let current_price = match close_prices_arr.get(i) {
+            Some(val) => Decimal::from_i128_with_scale(val, close_scale as u32),
             None => dec!(0),
         };
         if current_price <= dec!(0) { continue; }
 
-        let p = match win_probs.get(i) {
-            Some(val) => Decimal::from_i128_with_scale(val, win_probs.scale() as u32),
+        let p = match win_probs_arr.get(i) {
+            Some(val) => Decimal::from_i128_with_scale(val, win_prob_scale as u32),
             None => dec!(0.5),
         };
         let q = dec!(1.0) - p;
@@ -83,8 +108,8 @@ pub fn run_signal_backtest(
     }
 
     // 4. Calculate TTT Fitness
-    let last_price = match close_prices.get(num_rows - 1) {
-        Some(val) => Decimal::from_i128_with_scale(val, close_prices.scale() as u32),
+    let last_price = match close_prices_arr.get(num_rows - 1) {
+        Some(val) => Decimal::from_i128_with_scale(val, close_scale as u32),
         None => dec!(0),
     };
     let final_equity = cash + inventory * last_price;

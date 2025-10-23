@@ -1,8 +1,13 @@
 use pyo3::prelude::*;
+use pyo3::ffi::Py_uintptr_t;
+use pyo3::PyObject;
 use rust_decimal::prelude::{Decimal, ToPrimitive};
 use rust_decimal_macros::dec;
-use polars::prelude::DataFrame;
-use pyo3_polars::PyDataFrame;
+use arrow2::ffi;
+use arrow2::datatypes::Schema;
+use arrow2::array::Array;
+use arrow2::chunk::Chunk;
+use arrow2::io::ipc::read::StreamReader;
 
 pub mod hf_abm;
 pub mod velocity_core;
@@ -12,7 +17,25 @@ pub mod backtester;
 use hf_abm::simulator::{SimulationConfig, MarketStatistics, run_accelerated_simulation, run_accelerated_chimera_simulation};
 use backtester::signal_backtester::run_signal_backtest;
 use backtester::vectorized_backtester::{BacktestConfig, run_vectorized_backtest};
-use inference::gp_interpreter::{GPStrategy, HybridStrategy};
+use inference::gp_interpreter::{GPStrategy};
+
+// Helper function to convert PyArrow FFI object to a Rust RecordBatch and its Schema
+fn pyarrow_to_record_batch(py_obj: PyObject) -> PyResult<(Chunk<Box<dyn Array>>, Schema)> {
+    Python::with_gil(|py| {
+        let stream = py_obj.getattr(py, "__arrow_c_stream__")?;
+        let stream_ptr = stream.call0(py)?.extract::<Py_uintptr_t>(py)?;
+
+        let mut stream_reader = unsafe { ffi::ArrowArrayStreamReader::try_new(&mut (stream_ptr as *mut ffi::ArrowArrayStream)).unwrap() };
+
+        let schema = stream_reader.schema().clone();
+
+        match stream_reader.next() {
+            Some(Ok(chunk)) => Ok((chunk, schema)),
+            Some(Err(e)) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Failed to read Arrow record batch: {}", e))),
+            None => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Arrow stream is empty")),
+        }
+    })
+}
 
 #[pyclass(name = "SimulationConfig")]
 #[derive(Clone)]
@@ -106,20 +129,20 @@ impl From<MarketStatistics> for PyMarketStatistics {
 }
 
 #[pyfunction]
-fn run_vectorized_backtest_py(strategy_json: String, data: PyDataFrame, config: PyBacktestConfig, feature_names: Vec<String>) -> PyResult<f64> {
+fn run_vectorized_backtest_py(strategy_json: String, data: PyObject, config: PyBacktestConfig, feature_names: Vec<String>) -> PyResult<f64> {
     let strategy = GPStrategy::from_json(&strategy_json).map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid strategy JSON: {}", e)))?;
     let rust_config: BacktestConfig = config.into();
-    let rust_df: DataFrame = data.into();
-    let result = Python::with_gil(|py| py.allow_threads(|| run_vectorized_backtest(&strategy, &rust_df, &rust_config, &feature_names)));
+    let (record_batch, schema) = pyarrow_to_record_batch(data)?;
+    let result = Python::with_gil(|py| py.allow_threads(|| run_vectorized_backtest(&strategy, &record_batch, &schema, &rust_config, &feature_names)));
     let backtest_result = result.map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Backtest failed: {}", e)))?;
     Ok(backtest_result.ttt_fitness)
 }
 
 #[pyfunction]
-fn run_signal_backtest_py(data: PyDataFrame, config: PyBacktestConfig) -> PyResult<f64> {
+fn run_signal_backtest_py(data: PyObject, config: PyBacktestConfig) -> PyResult<f64> {
     let rust_config: BacktestConfig = config.into();
-    let rust_df: DataFrame = data.into();
-    let result = Python::with_gil(|py| py.allow_threads(|| run_signal_backtest(&rust_df, &rust_config)));
+    let (record_batch, schema) = pyarrow_to_record_batch(data)?;
+    let result = Python::with_gil(|py| py.allow_threads(|| run_signal_backtest(&record_batch, &schema, &rust_config)));
     let backtest_result = result.map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Signal Backtest failed: {}", e)))?;
     Ok(backtest_result.ttt_fitness)
 }
